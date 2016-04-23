@@ -11,22 +11,35 @@
 #include <semaphore.h>
 
 // Brett Lindsay
-// cs4760 assignment 5
+// cs4760 assignment 6
 // oss.h
 
 typedef enum {false, true} bool;
 
-// info for num of a resource from which process
+// info for num of page to reference
 typedef struct {
 	int pNum;
-	int byteAddr;
+	int lAddr;
 	bool isWrite;
+	bool isHit; // hit or miss in memory
 	bool isDone;
 } info_t;
 
+// a page in memory
+typedef struct {
+	bool isValid;
+	int pAddr;
+	int protectionBit;
+	bool isDirtyBit;
+	int refBit;
+} page_t;	
+
 // a process control block
 typedef struct {
-	info_t mem_req;
+	info_t pg_req;
+	bool isWaiting; // if waiting on device
+	int p_size; // size of process in pages
+	page_t page_table[32]; // a whole page table (32K)	
 	double totalSysTime; // time in system
 	double totalCpuTime; // time spent computing
 	double cTime; // create time
@@ -37,24 +50,10 @@ typedef struct {
 	sem_t sem; // semaphore for each process to wait on
 } pcb_t;	
 
-// a resource descriptor
-typedef struct {
-	int addr;
-	int protectionBit;
-	bool isDirtyBit;
-	int refBit;
-} page_t;	
-
-typedef struct {
-	page_t pages[32]; // process max 32K
-} table_t;	
-
-// logical clock and resource descriptors in oss 
+// logical clock in oss 
 typedef struct {
 	double lClock;
 	sem_t sem; // semaphore for lClock access
-	table_t page_tables[8]; // 32k tables -> 8 tables for 256K sys
-	int free_frames[8]; // bit vector for the 256 pages
 	int shm_id; // run_info_t shm_id 
 } run_info_t;
 
@@ -79,3 +78,6 @@ void clearBit(int*,int);
 int testBit(int*,int);
 void initRunInfo(int);
 void deadlock();
+void monitorMemRefs();
+void updateQueue();
+void get_page();

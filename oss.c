@@ -7,8 +7,8 @@
 #define MAX_PROCESS_COUNT 18
 #define MAX_USER_PROCS 12
 
-const int NO_FAULT = 10;
-const int FAULT = 15;
+const double NO_FAULT = .0010;
+const double FAULT = .0015;
 
 char *arg1; // to send process_id num to process
 char *arg2; // to send pcb shm_id num to process 
@@ -16,6 +16,12 @@ char *arg3; // to send runInfo shm_id num to process
 pcb_t *pcbs[MAX_PROCESS_COUNT] = { NULL };
 run_info_t *runInfo = NULL;
 sim_stats_t stats; 
+int sys_mem[8]; // bit array for 256K memory
+int freePages = 256; // dynamically keep track of free frame #
+int device_q[19] = { -1 }; // gauranteed 1 free slot
+int backOfQ = 0;
+int frontOfQ = 0;
+double nextQPop = -1.00;
 // signal handler prototypes
 void free_mem();
 
@@ -30,7 +36,7 @@ main (int argc, char *argv[]) {
 	bool isPcbsFull = false;
 	int next, nextCreate = 0; // points to next available PID
 	int res_pid;
-	srand(time(NULL));
+	srand (time(NULL));
 	signal(SIGINT, free_mem);
 
 	// init sim_stats_t for averages
@@ -93,23 +99,113 @@ main (int argc, char *argv[]) {
 				nextCreate = runInfo->lClock + r;
 			}
 		} // end create process if block
-		
+
+		// read each processes current request	
+		monitorMemRefs();
+		// signal front of queue if time has passed
+		updateQueue();
+
+		// check if all processes are waiting on device
+		deadlock();
+
 		// check for finished processes
 		updatePcbs(usedPcbs);
 
-		// update logical clock
-		r = (double)(rand() % 1000) / 1000;	
-		updateClock(r);
+		// check if free frames low
+		if (freePages < 26) {
+			get_page();
+		}
 	} // end infinite while	
 
 	// cleanup after normal execution - never reached in current implementation
-	cleanUp(); // clean up with free(), remove lClock, call cleanUpPcbs()
+	cleanUp(); // clean up with free() cleanUpPcbs()
+}
+
+void monitorMemRefs() {
+	// See what each process needs in memory next
+	int i;
+	for (i = 0; i < MAX_PROCESS_COUNT; i++) {
+		if (pcbs[i] == NULL || pcbs[i]->isCompleted) {
+			continue;
+		}
+		pcb_t *pcb = pcbs[i];
+		// if valid, let the process continue
+		if (!pcb->pg_req.isDone && pcb->page_table[pcb->pg_req.lAddr].isValid) { 
+			fprintf (stderr, "Process %d pg_ref in memory...continuing.\n", i);
+			// if page in memory, let it continue
+			updateClock(NO_FAULT);
+			pcb->pg_req.isHit = true;
+			sem_post (&pcbs[i]->sem);
+		} else {
+			fprintf (stderr, "Putting process %d on device queue.\n", i);
+			// if page not in memory, put it on the queue for device
+			device_q[backOfQ++] = i;
+			pcb->pg_req.isHit = false;
+			// process i waits on device
+			if (backOfQ == 19) { // don't let queue overflow
+				backOfQ = 0;
+			}
+		}
+	}
+}
+
+void updateQueue() {
+	int i, nextFree;
+	if (frontOfQ == backOfQ) {
+		// empty queue
+		return;
+	}
+	// if no next queue time and queue not empty, set next queue pop
+	if (nextQPop == -1 && frontOfQ != backOfQ) {
+		nextQPop = runInfo->lClock + FAULT;
+	} 
+	// release a process from device queue if its time
+	if (runInfo->lClock > nextQPop && nextQPop != -1) {
+		// find nextFree spot in sys_mem
+		for (i = 0; i < 256; i++) { // TODO switch to dynamic method
+			if ((nextFree = testBit(sys_mem, i)) == 0) {
+				break;
+			}
+			if (i == 256) {
+				fprintf (stderr, "sys_mem maxed out somehow\n");
+			}
+		}
+		setBit(sys_mem, nextFree);
+		freePages--; // dynamically keep track of free frames
+		pcb_t *pcb = pcbs[device_q[frontOfQ]];
+		pcb->page_table[pcb->pg_req.lAddr].pAddr = nextFree;
+		pcb->page_table[pcb->pg_req.lAddr].isValid = true;
+		sem_post(&pcb->sem);
+		if (++frontOfQ != backOfQ) {
+			nextQPop = runInfo->lClock + FAULT;
+		} else {
+			nextQPop = -1; // no one on queue
+		}
+	}
+}
+
+void get_page() {
+	// free the oldest 5% of pages from memory
+	fprintf (stderr, "get_page() called\n");
 }
 
 void deadlock() {
 	// if all processes are queued for device (i.e. waiting on their semaphore)
 	// advance logical clock to fulfill the request at the head
-	
+	int i;
+	bool allWaiting = true;
+	for (i = 0; i < 18; i++) {
+		if (pcbs[i] == NULL) {
+			continue;
+		}
+		if (!pcbs[i]->isWaiting) {
+			allWaiting = false;
+		}
+	}
+	if (allWaiting) {
+		// queue full advance the clock to let a process go
+		updateClock(FAULT);
+	}
 }
 
 // check for finished processes
@@ -139,36 +235,24 @@ void updatePcbs(int usedPcbs[]) {
 
 // update clock for 1 iteration, or update by a custom millisec. amt
 void updateClock(double r) {
-	// wait for chance to change clock
-	sleep(1); // don't let it reclaim
-	sem_wait(&runInfo->sem);
-
+	// update the clock
 	runInfo->lClock += r;
-
-	// signal others can update the clock
-	sem_post(&runInfo->sem);
-	fprintf(stderr, "oss: lClock: %.03f\n", runInfo->lClock); 
+	fprintf(stderr, "lClock: %.03f\n", runInfo->lClock); 
 }
 
 void initRunInfo(int shm_id) {
-	int i; // index
-	int r; // rand int
-	int sVar; // shared variance
-
-	runInfo->shm_id = shm_id;
+	// TODO make lClock not shared?
+	// init system memory 256K
+	// bit vector init to 0 for all
 
 	// init lClock
 	runInfo->lClock = 0.000;
-	// init semaphore for lClock
-	sem_init(&runInfo->sem, 0, 1); // init to 1
-
 } // end initRunInfo
 
 // init and return pointer to shared pcb
 pcb_t* initPcb(int pNum) {
-	int shm_id, r;
+	int shm_id, i;
 	pcb_t *pcb;
-	//srandom(time(NULL));
 
 	if ((shm_id = shmget(IPC_PRIVATE, sizeof(pcb_t*), IPC_CREAT | 0755)) == -1) {
 		perror("shmget");
@@ -178,7 +262,7 @@ pcb_t* initPcb(int pNum) {
 		perror("shmat");
 		exit(1);
 	}
-	pcb->mem_req.pNum = pNum;
+	pcb->pg_req.pNum = pNum;
 	pcb->totalSysTime = 0.000;
 	pcb->totalCpuTime = 0.000;
 	pcb->cTime = runInfo->lClock;
@@ -186,6 +270,17 @@ pcb_t* initPcb(int pNum) {
 	pcb->isCompleted = false;
 	pcb->shm_id = shm_id;
 	
+	// generate process size
+	pcb->p_size = (rand() % 17) + 15; // min process size of 2K (15K - 32K size)
+
+	// init page table for this process
+	for (i = 0; i < pcb->p_size + 1; i++) {
+		pcb->page_table[i].isValid = false;
+		pcb->page_table[i].pAddr = -1;
+		pcb->page_table[i].protectionBit = 0;
+		pcb->page_table[i].isDirtyBit = false;
+		pcb->page_table[i].refBit = 0;
+	}
 	// init semaphore for userProcess - block self 
 	sem_init(&pcb->sem, 0, 0); // init 0
 	
@@ -211,6 +306,13 @@ void removePcb(pcb_t *pcbs[], int i) {
 	int shm_id, n;
 	if (pcbs[i] == NULL) {
 		return;
+	}
+	for (n = 0; n < 32; n++) {
+		if (pcbs[n]->page_table[n].isValid) {
+			clearBit(sys_mem, n); 
+			freePages++;
+			// isValid cleared by setting pcb to NULL
+		}
 	}
 
 	// clean up zombies
@@ -264,7 +366,9 @@ void free_mem() {
 	int z;
 	FILE *fp;
 	fprintf(stderr, "Recieved SIGINT. Cleaning up and quiting.\n");
-	
+	if (backOfQ == 18) {
+		fprintf (stderr, "ERR-Queue would have overflowed\n");
+	}
 	// end stats
 	stats.turnA /= (double) stats.tPut;
 	stats.waitT /= (double) stats.tPut;

@@ -1,7 +1,7 @@
 #include "oss.h"
 
 // Brett Lindsay 
-// cs4760 assignment 5
+// cs4760 assignment 6
 // userProcess.c
 
 pcb_t *pcb = NULL;
@@ -9,10 +9,7 @@ run_info_t *runInfo = NULL;
 int pNum;
 
 // prototypes
-void addToClock(double);
 void intr_handler();
-void error_h();
-int calcTotalRes();
 
 main (int argc, char *argv[]) {
 	int shm_id;
@@ -21,7 +18,6 @@ main (int argc, char *argv[]) {
 	double rd; // random double
 	pNum = atoi(argv[1]);
 	signal(SIGINT,intr_handler);
-	signal(SIGFPE,error_h);
 	srand(time(NULL));
 
 	// get pcb info
@@ -35,9 +31,15 @@ main (int argc, char *argv[]) {
 	if ((runInfo = (run_info_t*) shmat(shm_id,0,0)) == (void*) -1) {
 		perror("shmat:runInfo");
 	}
+	fprintf(stderr, "Process %d: Starting\n", pNum);
 
-		fprintf(stderr, "Process %d: release all and die\n", pNum);
+	pcb->pg_req.lAddr = 10;
+	pcb->isWaiting = true;
+	sem_wait(&pcb->sem);
+	pcb->isWaiting = false;
 
+	pcb->isCompleted = true;
+	fprintf(stderr, "Process %d: release all and die\n", pNum);
 	// detach from shared
 	shmdt(runInfo);
 	runInfo = NULL;
@@ -45,15 +47,6 @@ main (int argc, char *argv[]) {
 	shmdt(pcb);
 	pcb = NULL;
 }
-
-void addToClock(double d) {
-	// wait for chance to change clock
-	sem_wait(&runInfo->sem);
-	runInfo->lClock += d;
-	fprintf(stderr, "userProcess%d: lClock + %.03f : %.03f\n", pNum, d, runInfo->lClock);
-	// signal others may update clock
-	sem_post(&runInfo->sem);
-}	
 
 void intr_handler() {
 	signal(SIGINT, SIG_DFL); // change to default SIGINT behavior
@@ -70,11 +63,3 @@ void intr_handler() {
 
 	raise(SIGINT);
 }	
-
-void error_h() {
-	signal(SIGFPE,error_h);
-	fprintf(stderr,"Error out of my control occurred gah!\n");
-	pcb->isCompleted = true;
-	raise(SIGINT);
-
-}
