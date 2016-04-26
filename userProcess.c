@@ -7,7 +7,7 @@
 pcb_t *pcb = NULL;
 run_info_t *runInfo = NULL;
 int pNum;
-
+int numRefs = 0;
 // prototypes
 void intr_handler();
 
@@ -18,7 +18,10 @@ main (int argc, char *argv[]) {
 	double rd; // random double
 	pNum = atoi(argv[1]);
 	signal(SIGINT,intr_handler);
-	srand(time(NULL));
+	
+	struct timeval tm;
+	gettimeofday(&tm, NULL);
+	srandom(tm.tv_sec + tm.tv_usec * 1000000ul);
 
 	// get pcb info
 	shm_id = atoi(argv[2]);
@@ -33,13 +36,39 @@ main (int argc, char *argv[]) {
 	}
 	fprintf(stderr, "Process %d: Starting\n", pNum);
 
-	pcb->pg_req.lAddr = 10;
-	pcb->isWaiting = true;
-	sem_wait(&pcb->sem);
-	pcb->isWaiting = false;
-
+  while (1) {
+		pcb->pg_ref.lAddr = random() % pcb->p_size;
+		pcb->pg_ref.isWrite = random() % 2; // false or true
+		pcb->pg_ref.isDone = false;
+		// wait for oss to signal
+		//pcb->isWaiting = true;
+		double startWait = runInfo->lClock;
+		//sem_wait(&pcb->sem);
+		while (pcb->isWaiting == true) {};
+		double endWait = runInfo->lClock;
+		//pcb->isWaiting = false;
+		pcb->pg_ref.isDone = true; // set in oss ??
+		pcb->totalWaitTime += endWait - startWait;
+		numRefs++;
+		fprintf (stderr, "Process %d finished ref %d for %d\n", pNum, numRefs, pcb->pg_ref.lAddr);	
+		//fflush(stderr);
+		if (numRefs > 100) {
+			/*int shouldQuit = random() % 2; // no/yes
+			if (shouldQuit) {
+				break;
+			} else {
+				numRefs = 0;
+			}*/
+			break;
+		}
+	}
+	pcb->dTime = runInfo->lClock;
+	pcb->totalSysTime = pcb->dTime - pcb->cTime;
+	pcb->totalCpuTime = (double) (numRefs * .0010);
+//	pcb->totalCpuTime = pcb->totalSysTime - pcb->totalWaitTime;
 	pcb->isCompleted = true;
-	fprintf(stderr, "Process %d: release all and die\n", pNum);
+
+	fprintf(stderr, "Process %d: finished\n", pNum);
 	// detach from shared
 	shmdt(runInfo);
 	runInfo = NULL;
@@ -58,6 +87,11 @@ void intr_handler() {
 	if (runInfo != NULL) {
 		shmdt(runInfo);
 	}	
+
+	pcb->dTime = runInfo->lClock;
+	pcb->totalSysTime = pcb->dTime - pcb->cTime;
+	pcb->totalCpuTime = (double) (numRefs * .0010);
+	pcb->isCompleted = true;
 
 	fprintf(stderr,"Received SIGINT: Process %d cleaned up and dying.\n",pNum);
 

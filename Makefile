@@ -25,7 +25,7 @@ $(EXES) : $(OBJSS)
 $(OBJSS) : oss.h 
 
 clean :
-	$(RM) -f $(EXES) $(EXEM) $(OBJSS) $(OBJSM) endStats.txt
+	$(RM) -f $(EXES) $(EXEM) $(OBJSS) $(OBJSM) endStats.txt processStats.txt
 
 
 
