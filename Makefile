@@ -8,6 +8,7 @@ SRCSM = oss.c
 SRCSS = userProcess.c 
 OBJSM = ${SRCSM:.c=.o}
 OBJSS = ${SRCSS:.c=.o}
+INFOS = *.txt
 
 .c:.o
 	$(CC) $(CFLAGS) -c $<
@@ -15,17 +16,17 @@ OBJSS = ${SRCSS:.c=.o}
 all : $(EXEM) $(EXES) #$(EXEPS)
 
 $(EXEM) : $(OBJSM)
-	$(CC) -o $@ $(OBJSM) -pthread
+	$(CC) $(CFLAGS) -o $@ $(OBJSM) -pthread
 
 $(OBJSM) : oss.h 
 
 $(EXES) : $(OBJSS)
-	$(CC) -o $@ $(OBJSS) -pthread
+	$(CC) $(CFLAGS) -o $@ $(OBJSS) -pthread
 
 $(OBJSS) : oss.h 
 
 clean :
-	$(RM) -f $(EXES) $(EXEM) $(OBJSS) $(OBJSM) endStats.txt processStats.txt
+	$(RM) -f $(EXES) $(EXEM) $(OBJSS) $(OBJSM) $(INFOS)
 
 
 

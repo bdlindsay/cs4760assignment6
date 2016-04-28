@@ -5,8 +5,8 @@
 // oss.c
 
 #define MAX_PROCESS_COUNT 18
-#define MAX_USER_PROCS 5
-#define DEVICE_Q_SIZE 6
+#define MAX_USER_PROCS 12
+#define DEVICE_Q_SIZE 13
 const double NO_FAULT = .0010;
 const double FAULT = .0015;
 
@@ -21,10 +21,12 @@ int freePages = 256; // dynamically keep track of free frame #
 int device_q[DEVICE_Q_SIZE] = { -1 }; // gauranteed 1 free slot
 int backOfQ = 0;
 int frontOfQ = 0;
-double nextQPop = -1.00;
+double nextQPop = 0;
 int deadlocks = 0;
 int lowMem = 0;
 int quits = 0;
+int timeUpdate = 1;
+int numProcs = 1;
 // signal handler prototypes
 void free_mem();
 
@@ -33,9 +35,10 @@ main (int argc, char *argv[]) {
 	arg1 = malloc(sizeof(int)); // process num in pcbs
 	arg2 = malloc(sizeof(int)); // shm_id to pcb
 	arg3 = malloc(sizeof(int)); // shm_id to runInfo
-	int i, shm_id, q, n;
+	int shm_id, q, n;
+	int i = MAX_USER_PROCS;
 	double r; // for random "milli seconds"
-	int usedPcbs[1] = { 0 }; // bit vector 0-17 needed for 12 PCBs
+	int usedPcbs[1] = { 0 }; // bit vector PCBs
 	bool isPcbsFull = false;
 	int next = 0; // points to next available PID
 	double nextCreate = 0; // time for next process creation 
@@ -65,13 +68,16 @@ main (int argc, char *argv[]) {
 	initRunInfo(shm_id);
 
 	while(1) { // infinite loop until alarm finishes
-		if (runInfo->lClock > 120) {
+		if (runInfo->lClock > 1000) {
 			fprintf(stderr,"Timeout duration reached\n");
 			raise(SIGINT);
 		}
 		if (nextCreate <= runInfo->lClock) {
 			isPcbsFull = true;
-			for (i = 0; i < MAX_USER_PROCS; i++) {
+			if (i == MAX_USER_PROCS) {
+				i = 0;
+			}
+			for (i; i < MAX_USER_PROCS; i++) {
 				if (testBit(usedPcbs,i) == 0) { 
 					next = i;	
 					isPcbsFull = false;	// need to set false when process killed
@@ -79,7 +85,7 @@ main (int argc, char *argv[]) {
 				}	
 			}
 			if (isPcbsFull) {
-				//fprintf(stderr, "pcbs array was full trying again...\n");
+				//fprintf(stderr, "PCBS FULL\n");
 			} else { // create a new process
 				// create and assign pcb to the OS's array
 				// init PCB
@@ -99,12 +105,14 @@ main (int argc, char *argv[]) {
 					clearBit(usedPcbs,next);
 				}
 				if (pcbs[next] != NULL && pcbs[next]->pid == 0) { // child process 
+					numProcs++;
 					execl("userProcess", arg0, arg1, arg2, arg3, 0);
 				} 
 				// only oss
 				if (pcbs[next] != NULL) { // don't change nextCreate if fork failed
 					// next process creation time
 					r = (double)((random() % 500) + 1) / 1000; // 1-500 milli
+					//r = FAULT;
 					nextCreate = (double) runInfo->lClock + r;
 				}
 			}
@@ -134,38 +142,56 @@ main (int argc, char *argv[]) {
 
 void monitorMemRefs() {
 	// See what each process needs in memory next
-	int i;
+	int i, val;
 	for (i = 0; i < MAX_USER_PROCS; i++) {
 		if (pcbs[i] == NULL || pcbs[i]->isCompleted) { // if no process or completed
+			if (pcbs[i] != NULL) {
+				numProcs--;
+			}
 			continue;
 		}
-		if (pcbs[i]->pg_ref.isDone || pcbs[i]->isWaiting) { // if old ref or is on queue
+		if (pcbs[i]->isWaiting) { // if onQueue
 			//fprintf(stderr, "Process %d is waiting on queue or old ref\n", i);
 			continue;
 		}	
+		/*if (numProcs == 1) {
+			fprintf (stderr, "NEED MORE PROCESSES\n");
+		}*/
+	
 		// if valid, let the process continue
-		if (pcbs[i]->page_table[pcbs[i]->pg_ref.lAddr].isValid) { 
-			fflush(stderr);
-			//fprintf (stderr, "Process %d pg_ref-%d in memory...continuing.\n", i, pcbs[i]->pg_ref.lAddr);
+		if (pcbs[i]->page_table[pcbs[i]->pg_ref.lAddr].isValid &&
+					pcbs[i]->pg_ref.hasNewReq) { 
 			// if page in memory, let it continue
+			pcbs[i]->pg_ref.hasNewReq = false;
 			sem_post (&pcbs[i]->sem);
-			pcbs[i]->isWaiting = false;
 			updateClock(NO_FAULT);
+			
 			stats.totalCpuTime += NO_FAULT;
 			pcbs[i]->pg_ref.isHit = true;
-			//pcbs[i]->onQueue = false;
 			pcbs[i]->hits++;
-			//pcbs[i]->pg_ref.isDone = true;
+			//fprintf (stderr, "Process %d pg_ref-%d in memory...continuing. --- %d\n",
+			//					i, pcbs[i]->pg_ref.lAddr, pcbs[i]->numRefs);
+			// update time stamp of when used last
+			int curr_pg = pcbs[i]->pg_ref.lAddr;
+			pcbs[i]->page_table[curr_pg].timeStamp = runInfo->lClock;
+			pcbs[i]->page_table[curr_pg].refBit = 1; // set ref bit
+			if (pcbs[i]->pg_ref.isWrite == 1) {
+				pcbs[i]->page_table[curr_pg].isDirtyBit = 1;
+			}
 		} else {
 			// if page not in memory, put it on the queue for device
+			pcbs[i]->pg_ref.hasNewReq = false;
 			device_q[backOfQ++] = i;
 			pcbs[i]->isWaiting = true;
-			fprintf (stderr, "Process %d to device queue. (size: %d-%d)\n", i, backOfQ, frontOfQ);
+			//fprintf (stderr, "Process %d to device queue. (size: %d-%d)\n", i, backOfQ, frontOfQ);
+			
 			pcbs[i]->pg_ref.isHit = false;
-			//pcbs[i]->onQueue = true;
 			pcbs[i]->misses++;
 			// process i waits on device
 			if (backOfQ == DEVICE_Q_SIZE) { // don't let queue overflow
+				if (frontOfQ == 0) {
+					fprintf (stderr, "A queue error Occurred!\n");
+				}
 				backOfQ = 0;
 			}
 		}
@@ -174,75 +200,140 @@ void monitorMemRefs() {
 
 void updateQueue() { 
 	int i, nextFree;
-	if (frontOfQ == backOfQ) {
-		// empty queue
+	if (frontOfQ == backOfQ) { // empty queue
 		return;
 	}
 	// if no next queue time and queue not empty, set next queue pop
 	if (nextQPop == -1) {
 		nextQPop = runInfo->lClock + FAULT;
 	} 
-	// release a process from device queue if its time
-	if (runInfo->lClock >= nextQPop && nextQPop != -1) {
-		// find nextFree spot in sys_mem
-		for (i = 0; i < 256; i++) {
+
+	if (runInfo->lClock >= nextQPop) { // frontOfQ pops when FAULT time has passed
+		for (i = 0; i < 256; i++) { // find next free in sys_mem
 			if ((nextFree = testBit(sys_mem, i)) == 0) {
 				break;
 			}
 			if (i == 256) {
-				fprintf (stderr, "sys_mem maxed out somehow\n");
+				fprintf (stderr, "Error: sys_mem maxed out somehow\n");
+				exit(1);
 			}
 		}
 		int p = device_q[frontOfQ];
 		if (device_q[frontOfQ] == -1) {
 			frontOfQ++; // can never be > backOfQ b/c of initial check
+			if (frontOfQ == DEVICE_Q_SIZE) {
+				frontOfQ = 0;
+			}	
 			if (frontOfQ == backOfQ) {
+				fprintf (stderr, "Error: Queue == -1 caused empty queue.\n");
 				return;
 			}
 		}
 		while (pcbs[p] == NULL) { // process was on queue and then quit?
-			fprintf(stderr, "DEBUG: %d\n", device_q[frontOfQ]);
 			frontOfQ++;
 			if (frontOfQ == DEVICE_Q_SIZE) {
 				frontOfQ = 0;
 			}
 			quits++;
 			if (frontOfQ == backOfQ) {
+				fprintf (stderr, "Error: PCB%d == NULL caused empty queue.\n", p);
 				return;
 			} else {
 				p = device_q[frontOfQ];
 			}
 		}
+		// set os data
 		setBit(sys_mem, nextFree);
 		freePages--; // dynamically keep track of free frames
-		fprintf (stderr, "Process %d handled for logical addr %d\n", p, pcbs[p]->pg_ref.lAddr);
-
+		// set time stamp of inital load
+		int curr_pg = pcbs[p]->pg_ref.lAddr;
+		pcbs[p]->page_table[curr_pg].timeStamp = runInfo->lClock;
+		pcbs[p]->page_table[curr_pg].refBit = 1; // set ref bit
+		if (pcbs[p]->pg_ref.isWrite == 1) {
+			pcbs[p]->page_table[curr_pg].isDirtyBit = 1;
+		}
+	//	fprintf (stderr, "Process %d handled for logical addr %d --- %d\n", 
+	//		p, pcbs[p]->pg_ref.lAddr, pcbs[p]->numRefs);
+		// set pcb data
 		pcbs[p]->page_table[pcbs[p]->pg_ref.lAddr].pAddr = nextFree;
 		pcbs[p]->page_table[pcbs[p]->pg_ref.lAddr].isValid = true;
-
-		//updateClock(NO_FAULT); // once fault has fixed, still adds time
-		//stats.totalCpuTime += NO_FAULT;
-
-		sem_post(&pcbs[p]->sem);
-
-		//pcbs[p]->pg_ref.isDone = true;
+		
+		sem_post(&pcbs[p]->sem); // signal process on queue can go
 		pcbs[p]->isWaiting = false;
-		//pcbs[p]->onQueue = false;
-		if (++frontOfQ != backOfQ) { // set new nextQPop if list not empty
+		updateClock(NO_FAULT); // once fault has fixed, still adds time
+		stats.totalCpuTime += NO_FAULT;
+		// next queue position
+		frontOfQ++;
+		if (frontOfQ == DEVICE_Q_SIZE) { // keep frontOfQ in bounds
+			frontOfQ = 0;
+		}
+		if (frontOfQ != backOfQ) { // set new nextQPop if list not empty
 			nextQPop = runInfo->lClock + FAULT;
 		} else {
 			nextQPop = -1; // no one on queue
 		}
-		if (frontOfQ == DEVICE_Q_SIZE) { // keep frontOfQ in bounds
-			frontOfQ = 0;
-		}
-	}
+	} // end of queuePop logic
 }
 
 void get_page() {
+	int i, j, k;
 	// free the oldest 5% of pages from memory
-	fprintf (stderr, "get_page() called\n");
+	//fprintf (stderr, "get_page() called\n");
 	lowMem++;
+
+	for (i = 0; i < MAX_USER_PROCS; i++) { // sweep each pcb
+		if (pcbs[i] == NULL) {
+			continue;
+		}
+		// turn off valid bit - ceiling of 5% of process size 
+		int turnOff;
+		if (pcbs[i]->p_size > 20) {
+			turnOff = 2;
+		} else {
+			turnOff = 1;
+		}
+		double oldestTS = -1;
+		int oldest = -1;
+		int first = -1;
+		for (j = 0; j < turnOff; j++) { // turn off 1 or 2 per process
+			for (k = 0; k < pcbs[i]->p_size; k++) { // sweep frame table
+				if (turnOff == 2 && k == oldest) {
+					continue;
+				}
+				if (pcbs[i]->page_table[k].isValid) {
+					if (oldest == -1) {
+						oldestTS = pcbs[i]->page_table[k].timeStamp;
+						oldest = k;
+					} else if (pcbs[i]->page_table[k].timeStamp < oldest) {
+						oldestTS = pcbs[i]->page_table[k].timeStamp;
+						oldest = k;
+					}
+				}
+			}
+			// mark for replacement or free frame
+			if (oldest != -1) {
+				if (pcbs[i]->page_table[oldest].refBit == 1) {
+					// mark for replacement
+					pcbs[i]->page_table[oldest].refBit = 0;
+				} else { // free frame and write back to disk if dirty*/
+					/*if (pcbs[i]->page_table[oldest].isDirtyBit == 1) {
+						fprintf (stderr, "Writing process %d page %d back to memory\n", i, oldest);
+					} else {
+						fprintf (stderr, "Process %d page %d not modified in sys_mem\n", i, oldest);
+					}*/
+					pcbs[i]->page_table[oldest].isDirtyBit = 0;
+					pcbs[i]->page_table[oldest].isValid = false;
+					clearBit(sys_mem, pcbs[i]->page_table[oldest].pAddr);
+					freePages++;
+				}
+			}
+			if (turnOff == 2) { // don't grab same one twice
+				first = oldest;
+				oldest = -1;
+			}
+		}
+	}
+		
 }
 
 void deadlock() {
@@ -285,22 +376,26 @@ void updatePcbs(int usedPcbs[]) {
 			// handle things on device queue?
 			int j;
 			for (j = frontOfQ; j < backOfQ; j++) {
-				if (device_q[j] == i) {
+				if (device_q[j] == i) { // if process ended while on queue?? 
+					fprintf (stderr, "Error: Queue had removed process on it.\n");
 					device_q[j] = -1;
 				}
 			}
-			if ((fp = fopen("processStats.txt","a")) == NULL) {
+			if ((fp = fopen("processStats.txt","a")) == NULL) { // write process stats to file
 				perror ("fopen:");
 			}
 			fprintf(fp, "Process %d finished with stats:\n", i);
 			fprintf(fp, "Hits: %d, Misses: %d\n", pcbs[i]->hits, pcbs[i]->misses);
 			if (pcbs[i]->misses == 0) {
+				fprintf (stderr, "Error: Process %d had 0 misses.\n");
 				pcbs[i]->misses = 1;
 			}
 			double hitRatio = (double)(pcbs[i]->hits/(pcbs[i]->hits+pcbs[i]->misses));
 			fprintf(fp, "Hit Ratio: %.02f\t", hitRatio);
 			fprintf(fp, "EAT: %.02f\n", (double)(FAULT * (1-hitRatio)) + (double)(NO_FAULT * hitRatio));
-			fclose(fp);
+
+			fclose(fp); // close file
+
 			// remove pcb
 			fprintf(stderr,"oss: Removing finished pcb[%d]\n",i);
 			removePcb(pcbs, i);
@@ -313,8 +408,10 @@ void updatePcbs(int usedPcbs[]) {
 void updateClock(double r) {
 	// update the clock
 	runInfo->lClock += r;
-	//fprintf(stderr, "lClock: %.04f\n", runInfo->lClock); 
-	//sleep(1);
+	/*if (runInfo->lClock > timeUpdate) {
+		fprintf(stderr, "lClock: %.04f\n", runInfo->lClock); 
+		timeUpdate += 5;
+	}*/
 }
 
 void initRunInfo(int shm_id) {
@@ -336,9 +433,10 @@ pcb_t* initPcb(int pNum) {
 		exit(1);
 	}
 	pcb->pg_ref.pNum = pNum;
-	pcb->pg_ref.isDone = true;
+	pcb->pg_ref.hasNewReq = false;
 	pcb->hits = 0;
 	pcb->misses = 0;
+	pcb->numRefs = 0;
 	pcb->totalSysTime = 0.000;
 	pcb->totalCpuTime = 0.000;
 	pcb->totalWaitTime = 0.000;
@@ -391,6 +489,11 @@ void removePcb(pcb_t *pcbs[], int i) {
 	for (n = 0; n < pcbs[i]->p_size; n++) {
 		if (pcbs[i]->page_table[n].isValid) {
 			pcbs[i]->page_table[n].isValid = false;
+			/*if (pcbs[i]->page_table[n].isDirtyBit == 1) {
+				fprintf (stderr, "Writing process %d page %d back to memory\n", i, n);
+			} else {
+				fprintf (stderr, "Process %d page %d not modified in sys_mem\n", i, n);
+			}*/
 			clearBit(sys_mem, pcbs[i]->page_table[n].pAddr); 
 			freePages++;
 		}
@@ -479,7 +582,7 @@ void free_mem() {
 		stats.totalCpuTime, runInfo->lClock, stats.cpuU);
 	fprintf(stderr,"Deadlocks fixed: %d\n", deadlocks);
 	fprintf(stderr,"Low Memory Warnings Fixed: %d\n", lowMem); 
-	fprintf(stderr,"Fails: %d\n", quits);
+	//fprintf(stderr,"Internal Errors: %d\n", quits);
 	// clean up with free(), remove lClock, call cleanUpPcbs()
 	cleanUp();
 

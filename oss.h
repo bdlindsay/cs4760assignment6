@@ -23,7 +23,7 @@ typedef struct {
 	unsigned lAddr:5;
 	unsigned isWrite:1;
 	unsigned isHit:1;
-	unsigned isDone:1;
+	unsigned hasNewReq:1;
 	/*int pNum;
 	int lAddr;
 	bool isWrite;
@@ -38,6 +38,7 @@ typedef struct {
 	unsigned protectionBit:1;
 	unsigned isDirtyBit:1;
 	unsigned refBit:1;
+	double timeStamp;
 	/*bool isValid;
 	int pAddr;
 	int protectionBit;
@@ -49,7 +50,6 @@ typedef struct {
 typedef struct {
 	info_t pg_ref;
 	bool isWaiting; // if waiting on device
-	bool onQueue; // is on device queue
 	int p_size; // size of process in pages
 	page_t page_table[32]; // a whole page table (32K)	
 	double totalSysTime; // time in system
@@ -59,6 +59,7 @@ typedef struct {
 	double dTime; // destroy time
 	int hits;
 	int misses;
+	int numRefs;
 	bool isCompleted;
 	int shm_id; // ref to id for shm
 	int pid; // pid for fork() return value
@@ -68,7 +69,6 @@ typedef struct {
 // logical clock in oss 
 typedef struct {
 	double lClock;
-	sem_t sem; // semaphore for lClock access
 	int shm_id; // run_info_t shm_id 
 } run_info_t;
 
