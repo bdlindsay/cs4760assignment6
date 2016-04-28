@@ -52,9 +52,9 @@ main (int argc, char *argv[]) {
 		pcb->numRefs++;
 
 		//pcb->pg_ref.hasNewReq = false;
-		pcb->totalWaitTime += endWait - startWait;
+		pcb->totalWaitTime += endWait - startWait + .0005; // overhead from oss
 
-		fprintf (stderr, "Process %d finished ref %d for %d\n", pNum, pcb->numRefs, pcb->pg_ref.lAddr);	
+		fprintf (stderr, "Process %d finished ref for page %d\n", pNum, pcb->pg_ref.lAddr);	
 		fflush(stderr);
 		// Should I end?
 		if (pcb->numRefs > 50) {

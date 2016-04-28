@@ -1,13 +1,12 @@
 # cs4760assignment6
 # Brett Lindsay
-# 4/14/16 
+# 4/28/16 
 
 Normal execution:
 	make
 	oss
 
 	Description & Implementation Details:
-	
-
+	If throughput looks really low, please try running the program again and within a few runs it should have a more expected throughput. The display of which frames are currently allocated doesn't seem right. Adjustments to run specifications to have a smoother program run. Everything else as expected.
 
 
